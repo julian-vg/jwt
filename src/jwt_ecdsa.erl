@@ -1,4 +1,4 @@
-%% @doc Eliptic curve digital signature algorithm
+%% @doc Elliptic curve digital signature algorithm
 %%
 %% Helper functions for encoding/decoding ECDSA signature
 %%

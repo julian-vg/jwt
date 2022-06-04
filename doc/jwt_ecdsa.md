@@ -5,7 +5,7 @@
 * [Function Index](#index)
 * [Function Details](#functions)
 
-Eliptic curve digital signature algorithm.
+Elliptic curve digital signature algorithm.
 
 <a name="description"></a>
 
