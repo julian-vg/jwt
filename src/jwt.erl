@@ -27,13 +27,16 @@
 -type expiration() :: {hourly, non_neg_integer()} | {daily, non_neg_integer()} | non_neg_integer().
 -type context() :: map().
 
+-type key() :: binary() | public_key:private_key().
+-type key_id() :: binary().
+
 %%
 %% API
 %%
 -spec encode(
     Alg :: binary(),
     ClaimsSet :: map() | list(),
-    Key :: binary() | public_key:private_key()
+    Key :: key() | {key_id() | key()}
 ) -> {ok, Token :: binary()} | {error, any()}.
 %% @doc Creates a token from given data and signs it with a given secret
 %%
@@ -47,15 +50,21 @@
 %%      But only [HS256, HS384, HS512, RS256] are supported
 %%  </li>
 %%  <li>`ClaimsSet' the payload of the token. Can be both map and proplist</li>
-%%  <li>`Key' binary in case of hmac encryption and private key if rsa</li>
+%%  <li>`Key' binary in case of hmac encryption and private key if rsa, or a tuple of the form `{KeyId, Key}' where `KeyId' is the identifier of the key in the JWKS (JSON Web Key Set)</li>
 %% </ul>
 %%
 %% @end
 encode(Alg, ClaimsSet, Key) ->
+    {KeyId, Key1} = case Key of
+                        {Kid, _} when is_binary(Kid) ->
+                            Key;
+                        _ ->
+                            {undefined, Key}
+                    end,
     Claims = base64url:encode(jsx:encode(ClaimsSet)),
-    Header = base64url:encode(jsx:encode(jwt_header(Alg))),
+    Header = base64url:encode(jsx:encode(jwt_header(Alg, KeyId))),
     Payload = <<Header/binary, ".", Claims/binary>>,
-    case jwt_sign(Alg, Payload, Key) of
+    case jwt_sign(Alg, Payload, Key1) of
         undefined -> {error, algorithm_not_supported};
         Signature -> {ok, <<Payload/binary, ".", Signature/binary>>}
     end.
@@ -64,7 +73,7 @@ encode(Alg, ClaimsSet, Key) ->
     Alg :: binary(),
     ClaimsSet :: map() | list(),
     Expiration :: expiration(),
-    Key :: binary() | public_key:private_key()
+    Key :: key() | {key_id() | key()}
 ) -> {ok, Token :: binary()} | {error, any()}.
 %% @doc Creates a token from given data and signs it with a given secret
 %%
@@ -83,16 +92,19 @@ encode(Alg, ClaimsSet, Expiration, Key) ->
 
 -spec decode(
     Token :: binary(),
-    Key :: binary() | public_key:public_key() | public_key:private_key()
+    KeyOrIssuerKeyMapping :: key() | public_key:public_key() | map()
 ) -> {ok, Claims :: map()} | {error, any()}.
 %% @doc Decodes a token, checks the signature and returns the content of the token
 %%
 %% <ul>
 %%   <li>`Token' is a JWT itself</li>
 %%   <li>`Key' is a secret phrase or public/private key depend on encryption algorithm</li>
+%%   <li>`IssuerKeyMapping' is an issuer key mapping or a JWKS (JSON Web Key SEt).</li>
 %% </ul>
 %%
 %% @end
+decode(Token, IssuerKeyMapping) when is_map(IssuerKeyMapping) ->
+    decode(Token, <<>>, IssuerKeyMapping);
 decode(Token, Key) ->
     decode(Token, Key, #{}).
 
@@ -100,12 +112,12 @@ decode(Token, Key) ->
 % then apply those keys instead
 -spec decode(
     Token :: binary(),
-    DefaultKey :: binary() | public_key:public_key() | public_key:private_key(),
+    DefaultKey :: key() | public_key:public_key(),
     IssuerKeyMapping :: map()
 ) -> {ok, Claims :: map()} | {error, any()}.
 %% @doc Decode with an issuer key mapping
 %%
-%% Receives the issuer key mapping as the last parameter
+%% Receives the issuer key mapping or JWKS (JSON Web Key Set) as the last parameter
 %%
 %% @end
 decode(Token, DefaultKey, IssuerKeyMapping) ->
@@ -169,7 +181,37 @@ decode_jwt(#{header := Header, claims := Claims} = Context) ->
     end.
 
 %% @private
-get_key(#{claims_json := Claims} = Context, DefaultKey, IssuerKeyMapping) ->
+get_key(
+  #{header_json := #{<<"kid">> := _}} = Context,
+  _DefaultKey,
+  #{<<"keys">> := _} = DecodedJWKS) ->
+    get_key_by_kid(Context, DecodedJWKS);
+get_key(
+  #{header_json := #{<<"kid">> := _}} = Context,
+  EncodedJWKS,
+  IssuerKeyMapping) when is_binary(EncodedJWKS) ->
+    try
+        DecodedJWKS = jsx:decode(EncodedJWKS, [{return_maps, true}]),
+        get_key_by_kid(Context, DecodedJWKS)
+    catch
+        exit:badarg ->
+            get_key_by_issuer(Context, EncodedJWKS, IssuerKeyMapping)
+    end;
+get_key(Context, DefaultKey, IssuerKeyMapping) ->
+    get_key_by_issuer(Context, DefaultKey, IssuerKeyMapping).
+
+get_key_by_kid(
+  #{header_json := #{<<"kid">> := KeyId}} = Context,
+  #{<<"keys">> := _} = JwkSet) ->
+    case jwk:decode(KeyId, JwkSet) of
+        {ok, Key} ->
+            {cont, maps:merge(Context, #{key => Key})};
+        Error ->
+            {halt, Error}
+    end.
+
+get_key_by_issuer(
+  #{claims_json := Claims} = Context, DefaultKey, IssuerKeyMapping) ->
     Issuer = maps:get(<<"iss">>, Claims, undefined),
     Key = maps:get(Issuer, IssuerKeyMapping, DefaultKey),
     {cont, maps:merge(Context, #{key => Key})}.
@@ -225,7 +267,7 @@ jwt_is_expired(_) ->
     Header :: binary(),
     Claims :: binary(),
     Signature :: binary(),
-    Key :: binary() | public_key:public_key() | public_key:private_key()
+    Key :: key() | public_key:public_key()
 ) -> boolean().
 %% @private
 jwt_check_sig(Alg, Header, Claims, Signature, Key) ->
@@ -235,7 +277,7 @@ jwt_check_sig(Alg, Header, Claims, Signature, Key) ->
     {atom(), atom()},
     Payload :: binary(),
     Signature :: binary(),
-    Key :: binary() | public_key:public_key() | public_key:private_key()
+    Key :: key() | public_key:public_key()
 ) -> boolean().
 %% @private
 jwt_check_sig({hmac, _} = Alg, Payload, Signature, Key) ->
@@ -263,10 +305,17 @@ jwt_add_exp(ClaimsSet, Expiration) ->
     Exp = expiration_to_epoch(Expiration),
     append_claim(ClaimsSet, <<"exp">>, Exp).
 
--spec jwt_header(Alg :: binary()) -> list().
-jwt_header(Alg) ->
+-spec jwt_header(Alg :: binary(), KeyId :: binary() | undefined) -> list().
+jwt_header(Alg, KeyId) ->
+    EncodedKeyId = case KeyId of
+                       undefined ->
+                           [];
+                       _ ->
+                           [{<<"kid">>, KeyId}]
+                   end,
     [ {<<"alg">>, Alg}
     , {<<"typ">>, <<"JWT">>}
+    | EncodedKeyId
     ].
 
 %%
@@ -275,7 +324,7 @@ jwt_header(Alg) ->
 -spec jwt_sign(
     Alg :: binary(),
     Payload :: binary(),
-    Key :: binary() | public_key:private_key()
+    Key :: key()
 ) -> binary() | undefined.
 %% @private
 jwt_sign(Alg, Payload, Key) ->
