@@ -127,6 +127,16 @@ encoding_with_rs256_test() ->
 
     ?assertEqual(makeToken(ExpHeader, ExpPayload, ExpSignature), Token).
 
+encoding_with_rs256_and_kid_test() ->
+    Claims = #{sub => 1234567890, name => <<"John Doe">>, admin => true},
+    {ok, Token} = jwt:encode(<<"RS256">>, Claims, {<<"MyKeyId">>, rsa_secret()}),
+
+    ExpHeader = <<"eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6Ik15S2V5SWQifQ">>,
+    ExpPayload = <<"eyJhZG1pbiI6dHJ1ZSwibmFtZSI6IkpvaG4gRG9lIiwic3ViIjoxMjM0NTY3ODkwfQ">>,
+    ExpSignature = <<"J3JlWDBUbeqV7BFSDVjl-Ba4zkZLzLgisR8M9LmgjirxfcGVohQrjsJntS6KEjxNil8J4IleT1-DpHyTFByerm8fXj0tbxTO7HFcTOWNfC_sn2cpSQ7iAJwP6D8a4J6c00-dZnFK-8SkQGkMhjmUVLp-fEpPzUbI2uoSlbd1-lU">>,
+
+    ?assertEqual(makeToken(ExpHeader, ExpPayload, ExpSignature), Token).
+
 decoding_with_rs256_test() ->
     Header = <<"eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9">>,
     Payload = <<"eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiYWRtaW4iOnRydWV9">>,
@@ -137,6 +147,28 @@ decoding_with_rs256_test() ->
     ?assertMatch({ok, #{<<"sub">>   := <<"1234567890">>,
                         <<"name">>  := <<"John Doe">>,
                         <<"admin">> := true}}, Claims).
+
+decoding_with_rs256_and_kid_test() ->
+    Header = <<"eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6Ik15S2V5SWQifQ">>,
+    Payload = <<"eyJhZG1pbiI6dHJ1ZSwibmFtZSI6IkpvaG4gRG9lIiwic3ViIjoxMjM0NTY3ODkwfQ">>,
+    Signature = <<"J3JlWDBUbeqV7BFSDVjl-Ba4zkZLzLgisR8M9LmgjirxfcGVohQrjsJntS6KEjxNil8J4IleT1-DpHyTFByerm8fXj0tbxTO7HFcTOWNfC_sn2cpSQ7iAJwP6D8a4J6c00-dZnFK-8SkQGkMhjmUVLp-fEpPzUbI2uoSlbd1-lU">>,
+
+    {ok, JWKS} = jwk:encode(<<"MyKeyId">>, rsa_public()),
+    Claims = jwt:decode(makeToken(Header, Payload, Signature), JWKS),
+
+    ?assertMatch({ok, #{<<"sub">>   := 1234567890,
+                        <<"name">>  := <<"John Doe">>,
+                        <<"admin">> := true}}, Claims).
+
+decoding_with_rs256_and_invalid_kid_test() ->
+    Header = <<"eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6Ik15S2V5SWQifQ">>,
+    Payload = <<"eyJhZG1pbiI6dHJ1ZSwibmFtZSI6IkpvaG4gRG9lIiwic3ViIjoxMjM0NTY3ODkwfQ">>,
+    Signature = <<"J3JlWDBUbeqV7BFSDVjl-Ba4zkZLzLgisR8M9LmgjirxfcGVohQrjsJntS6KEjxNil8J4IleT1-DpHyTFByerm8fXj0tbxTO7HFcTOWNfC_sn2cpSQ7iAJwP6D8a4J6c00-dZnFK-8SkQGkMhjmUVLp-fEpPzUbI2uoSlbd1-lU">>,
+
+    {ok, JWKS} = jwk:encode(<<"NonMatchingKeyId">>, rsa_public()),
+    Error = jwt:decode(makeToken(Header, Payload, Signature), JWKS),
+
+    ?assertMatch({error, not_found}, Error).
 
 decoding_with_rs256_invalid_signature_test() ->
     Header = <<"eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9">>,
