@@ -296,6 +296,8 @@ jwt_check_sig({ecdsa, Crypto}, Payload, Signature, Key) ->
 jwt_check_sig(_, _, _, _) ->
     false.
 
+hex_dump(Bin) -> string:lowercase(erlang:list_to_binary(unicode:characters_to_list([io_lib:format("~2.16.0B",[X]) || <<X:8>> <= Bin ]))).
+
 %%
 %% Encoding helpers
 %%
@@ -313,7 +315,8 @@ jwt_header(Alg, KeyId) ->
                        _ ->
                            [{<<"kid">>, KeyId}]
                    end,
-    [ {<<"alg">>, Alg}
+    [ {<<"alg">>, Alg},
+      {<<"nonce">>, hex_dump(crypto:strong_rand_bytes(16))}
     , {<<"typ">>, <<"JWT">>}
     | EncodedKeyId
     ].
